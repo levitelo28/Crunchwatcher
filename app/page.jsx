@@ -183,9 +183,10 @@ function CrunchWatcherContent() {
     return permission === "granted" ? "" : "Notifications were not enabled.";
   }
 
-  const currentDay = state.checkIns[state.activeDay - 1] || state.checkIns[0];
-  const currentScore = scoreDay(currentDay, state.goals, state.checkIns.slice(0, state.activeDay - 1)).total;
-  const week = getWeekNumber(state.activeDay);
+  const safeActiveDay = Math.min(Math.max(Number(state.activeDay) || 1, 1), state.goals.programLength || state.checkIns.length || 1);
+  const currentDay = state.checkIns[safeActiveDay - 1] || state.checkIns[0] || createEmptyCheckIn(1, state.goals);
+  const currentScore = scoreDay(currentDay, state.goals, state.checkIns.slice(0, safeActiveDay - 1)).total;
+  const week = getWeekNumber(safeActiveDay);
   const weeklyStats = useMemo(
     () => getWeeklyStats(state.checkIns, state.goals, week),
     [state.checkIns, state.goals, week]
@@ -266,7 +267,7 @@ function CrunchWatcherContent() {
             </span>
             <span>
               <span className="athletic-title block text-base leading-tight">Crunch Watcher</span>
-              <span className="text-xs font-semibold text-muted">Day {state.activeDay} of {state.goals.programLength}</span>
+              <span className="text-xs font-semibold text-muted">Day {safeActiveDay} of {state.goals.programLength}</span>
             </span>
           </button>
           <button
@@ -327,7 +328,7 @@ function CrunchWatcherContent() {
               <Dashboard
                 goals={state.goals}
                 checkIns={state.checkIns}
-                activeDay={state.activeDay}
+                activeDay={safeActiveDay}
                 setActiveDay={(day) => setState((current) => ({ ...current, activeDay: day }))}
                 setActiveView={setActiveView}
                 weeklyStats={weeklyStats}
@@ -339,14 +340,14 @@ function CrunchWatcherContent() {
                 goals={state.goals}
                 checkIn={currentDay}
                 score={currentScore}
-                onChange={(updates) => updateCheckIn(state.activeDay, updates)}
+                onChange={(updates) => updateCheckIn(safeActiveDay, updates)}
               />
             )}
             {activeView === "timeline" && (
               <Timeline
                 goals={state.goals}
                 checkIns={state.checkIns}
-                activeDay={state.activeDay}
+                activeDay={safeActiveDay}
                 onSelect={(day) => {
                   setState((current) => ({ ...current, activeDay: day }));
                   setActiveView("today");
@@ -699,24 +700,6 @@ function SetupScreen({ goals, onSave }) {
 function SettingsScreen({ goals, onSave }) {
   return (
     <div className="grid gap-6">
-      <section className="overflow-hidden rounded-[2rem] bg-ink p-6 text-cream shadow-soft dark:bg-dusk sm:p-8">
-        <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-end">
-          <div>
-            <p className="text-sm font-semibold text-cream/70">Day {activeDay} of {goals.programLength}</p>
-            <h1 className="mt-3 max-w-xl text-4xl font-black leading-[0.95] tracking-tight sm:text-6xl">Build the day. Keep the streak.</h1>
-            <p className="mt-4 max-w-md text-base font-semibold text-cream/70">{message}</p>
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Button onClick={() => setActiveView("today")} className="bg-cream text-ink hover:bg-cream">Start Check-In</Button>
-              <Button variant="secondary" onClick={() => setActiveView("workout")} className="border-cream/15 bg-cream/10 text-cream hover:border-cream/40">Workout Assistant</Button>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <HeroMiniStat label="Today Score" value={today.completed ? currentScore : "Open"} />
-            <HeroMiniStat label="Recovery" value={`${recoveryScore}%`} />
-            <HeroMiniStat label="Streak" value={weeklyStats.streak} />
-          </div>
-        </div>
-      </section>
       <ScreenTitle title="Build your Daily accountability plan" subtitle="Tune the goals without losing past check-ins." />
       <GoalEditor goals={goals} onSave={onSave} saveLabel="Save goals" />
     </div>
@@ -846,7 +829,8 @@ function GoalEditor({ goals, onSave, saveLabel }) {
 }
 
 function Dashboard({ goals, checkIns, activeDay, setActiveDay, setActiveView, weeklyStats, currentScore }) {
-  const today = checkIns[activeDay - 1];
+  const safeDay = Math.min(Math.max(Number(activeDay) || 1, 1), goals.programLength || checkIns.length || 1);
+  const today = checkIns[safeDay - 1] || checkIns[0] || createEmptyCheckIn(1, goals);
   const trendData = getScoreTrend(checkIns, goals).slice(-10);
   const waterPercent = Math.min(100, Math.round((Number(today.waterConsumed || 0) / Math.max(Number(goals.water.amount || 1), 1)) * 100));
   const workoutPercent = Math.min(100, Math.round((weeklyStats.totalWorkouts / Math.max(Number(goals.exercise.workoutsPerWeek || 1), 1)) * 100));
@@ -863,7 +847,7 @@ function Dashboard({ goals, checkIns, activeDay, setActiveDay, setActiveView, we
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Today Score" value={today.completed ? currentScore : "Open"} hint={today.completed ? "out of 100" : "Check-in waiting"} />
         <StatCard label="Recovery" value={`${recoveryScore}%`} hint="Score, water, training balance" />
-        <StatCard label="Weekly Average" value={weeklyStats.completedDays ? weeklyStats.average : "No score"} hint={`Week ${getWeekNumber(activeDay)} / ${weeklyStats.completedDays} logged`} />
+        <StatCard label="Weekly Average" value={weeklyStats.completedDays ? weeklyStats.average : "No score"} hint={`Week ${getWeekNumber(safeDay)} / ${weeklyStats.completedDays} logged`} />
         <StatCard label="Workout Progress" value={`${weeklyStats.totalWorkouts}/${goals.exercise.workoutsPerWeek}`} hint="This week" />
       </div>
       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
@@ -887,7 +871,7 @@ function Dashboard({ goals, checkIns, activeDay, setActiveDay, setActiveView, we
         </div>
         <div className="grid gap-4">
           <HydrationRing percent={waterPercent} value={today.waterConsumed} max={goals.water.amount} unit={goals.water.unit} />
-          <DayPicker checkIns={checkIns} activeDay={activeDay} programLength={goals.programLength} setActiveDay={setActiveDay} />
+          <DayPicker checkIns={checkIns} activeDay={safeDay} programLength={goals.programLength} setActiveDay={setActiveDay} />
         </div>
       </div>
     </div>
@@ -1477,7 +1461,7 @@ function WorkoutProgress({ stats, workouts }) {
       </div>
       <div className="card grid gap-3">
         <h2 className="text-xl font-black tracking-tight">Training Trend</h2>
-        <div className="h-44">
+        <div className="min-h-44 h-44 w-full min-w-0">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={lastSix.map((workout) => ({ type: workout.type.slice(0, 3), minutes: Number(workout.duration || 0) }))}>
               <XAxis dataKey="type" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#5C5C5C" }} />
@@ -1691,20 +1675,23 @@ function ReminderBanner({ goals, setState }) {
 }
 
 function DayPicker({ checkIns, activeDay, programLength, setActiveDay }) {
+  const safeDay = Math.min(Math.max(Number(activeDay) || 1, 1), programLength || checkIns.length || 1);
+  const completionPercent = Math.round((safeDay / Math.max(programLength || checkIns.length || 1, 1)) * 100);
+
   return (
     <div className="card">
       <div className="mb-4 flex items-center justify-between">
         <div>
           <p className="section-label">Program timeline</p>
-          <h2 className="text-xl font-black tracking-tight">Day {activeDay} of {programLength}</h2>
+          <h2 className="text-xl font-black tracking-tight">Day {safeDay} of {programLength}</h2>
         </div>
-        <span className="rounded-full bg-ink px-3 py-1 text-xs font-bold text-cream dark:bg-cream dark:text-charcoal">{Math.round((activeDay / programLength) * 100)}%</span>
+        <span className="rounded-full bg-ink px-3 py-1 text-xs font-bold text-cream dark:bg-cream dark:text-charcoal">{completionPercent}%</span>
       </div>
       <div className="grid grid-cols-6 gap-2">
         {checkIns.map((entry) => (
           <button
             key={entry.day}
-            className={`aspect-square rounded-full text-sm font-bold transition ${activeDay === entry.day ? "bg-ink text-cream shadow-float dark:bg-cream dark:text-charcoal" : entry.completed ? "bg-mint/20 text-ink dark:text-cream" : "bg-cream/70 text-muted dark:bg-charcoal/70"}`}
+            className={`aspect-square rounded-full text-sm font-bold transition ${safeDay === entry.day ? "bg-ink text-cream shadow-float dark:bg-cream dark:text-charcoal" : entry.completed ? "bg-mint/20 text-ink dark:text-cream" : "bg-cream/70 text-muted dark:bg-charcoal/70"}`}
             onClick={() => setActiveDay(entry.day)}
           >
             {entry.day}
@@ -1736,7 +1723,7 @@ function HeroMiniStat({ label, value }) {
 
 function ScoreTrendChart({ data }) {
   return (
-    <div className="h-44 w-full">
+    <div className="min-h-44 h-44 w-full min-w-0">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 10, right: 4, left: 4, bottom: 0 }}>
           <defs>
@@ -1759,7 +1746,7 @@ function HydrationRing({ percent, value, max, unit }) {
   return (
     <div className="card grid place-items-center text-center">
       <p className="section-label">Hydration</p>
-      <div className="relative mt-2 size-44 text-ink dark:text-cream">
+      <div className="relative mt-2 size-44 min-h-44 min-w-44 text-ink dark:text-cream">
         <ResponsiveContainer width="100%" height="100%">
           <RadialBarChart innerRadius="72%" outerRadius="94%" data={data} startAngle={90} endAngle={-270}>
             <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
