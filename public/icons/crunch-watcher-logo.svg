@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Crunch Watcher</title>
+  <rect width="512" height="512" fill="#F5F1EA"/>
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#111111" stroke-width="12"/>
+  <circle cx="256" cy="256" r="154" fill="none" stroke="#111111" stroke-width="4"/>
+  <text x="256" y="132" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="50" letter-spacing="12" fill="#111111">CRUNCH</text>
+  <text x="256" y="407" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="50" letter-spacing="12" fill="#111111">WATCH</text>
+  <g fill="none" stroke="#111111" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M156 256h200" stroke-width="18"/>
+    <path d="M208 224v64" stroke-width="20"/>
+    <path d="M304 224v64" stroke-width="20"/>
+    <path d="M132 218v76M112 228v56M380 218v76M400 228v56" stroke-width="14"/>
+    <path d="M230 238c8-18 44-18 52 0v58h-52z" stroke-width="10" fill="#F5F1EA"/>
+    <path d="M220 248l-18 16 18 18M292 248l18 16-18 18" stroke-width="10"/>
+  </g>
+</svg>

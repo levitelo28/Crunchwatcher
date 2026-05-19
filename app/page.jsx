@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bell, CalendarDays, ClipboardList, Dumbbell, Home, Medal, Moon, Settings, Share2, Sun, Upload } from "lucide-react";
+import { Bell, CalendarDays, ClipboardList, Download, Dumbbell, Home, Medal, Moon, Settings, Share2, Smartphone, Sun, Upload, Wifi, WifiOff } from "lucide-react";
+import { motion } from "framer-motion";
+import { Area, AreaChart, Bar, BarChart, PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
+import { Button } from "../components/ui/button";
 import { createEmptyCheckIn, createInitialState, defaultWorkoutAssistant, STORAGE_KEY } from "../lib/defaults";
 import { AuthProvider, useAuth } from "../lib/auth";
-import { getEarnedBadges, getWeekNumber, getWeeklyStats, scoreColor, scoreDay } from "../lib/scoring";
+import { getEarnedBadges, getWeekNumber, getWeeklyStats, scoreDay } from "../lib/scoring";
 import { badgeLabels, buildWeeklyReport } from "../lib/report";
 import { ensureProfile, importLocalState, loadUserState, saveUserState } from "../lib/supabaseData";
 import { createExercise, createWorkout, getRecovery, getSuggestedWeight, getWorkoutStats, recommendWorkout, workoutTypes } from "../lib/workouts";
@@ -16,8 +19,11 @@ const navItems = [
   { id: "workout", label: "Workout Assistant", icon: Dumbbell },
   { id: "report", label: "Report", icon: Share2 },
   { id: "rewards", label: "Rewards", icon: Medal },
+  { id: "install", label: "Install", icon: Smartphone },
   { id: "settings", label: "Settings", icon: Settings }
 ];
+
+const OFFLINE_CACHE_KEY = "crunch-watcher-offline-cache-v1";
 
 export default function CrunchWatcherApp() {
   return (
@@ -35,6 +41,11 @@ function CrunchWatcherContent() {
   const [remoteStatus, setRemoteStatus] = useState("Loading account...");
   const [remoteError, setRemoteError] = useState("");
   const [localImportState, setLocalImportState] = useState(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
+  const [notificationPermission, setNotificationPermission] = useState("default");
 
   useEffect(() => {
     if (auth.loading) return;
@@ -46,18 +57,28 @@ function CrunchWatcherContent() {
     let active = true;
     async function loadRemoteState() {
       try {
+        setLoaded(false);
         setRemoteStatus("Loading your training log...");
         setRemoteError("");
         await ensureProfile(auth.user);
         const remoteState = await loadUserState(auth.user.id);
         const localRaw = window.localStorage.getItem(STORAGE_KEY);
         setState(normalizeSavedState(remoteState));
+        window.localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify(remoteState));
         if (localRaw) setLocalImportState(normalizeSavedState(JSON.parse(localRaw)));
         if (active) {
           setLoaded(true);
           setRemoteStatus("Saved to Supabase");
         }
       } catch (error) {
+        const offlineRaw = window.localStorage.getItem(OFFLINE_CACHE_KEY);
+        if (!navigator.onLine && offlineRaw) {
+          setState(normalizeSavedState(JSON.parse(offlineRaw)));
+          setLoaded(true);
+          setRemoteError("");
+          setRemoteStatus("Offline mode - changes sync when connection returns");
+          return;
+        }
         if (active) {
           setRemoteError(error.message);
           setRemoteStatus("Could not load Supabase data");
@@ -69,11 +90,16 @@ function CrunchWatcherContent() {
     return () => {
       active = false;
     };
-  }, [auth.loading, auth.configured, auth.user]);
+  }, [auth.loading, auth.configured, auth.user, loadAttempt]);
 
   useEffect(() => {
     if (!loaded || !auth.user) return undefined;
     document.documentElement.classList.toggle("dark", state.darkMode);
+    window.localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify(state));
+    if (!isOnline) {
+      setRemoteStatus("Offline mode - changes sync when connection returns");
+      return undefined;
+    }
     const timer = window.setTimeout(async () => {
       try {
         setRemoteStatus("Saving...");
@@ -86,7 +112,7 @@ function CrunchWatcherContent() {
       }
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [state, loaded, auth.user]);
+  }, [state, loaded, auth.user, isOnline]);
 
   useEffect(() => {
     if (!loaded || !state.goals.notificationsEnabled) return undefined;
@@ -97,9 +123,65 @@ function CrunchWatcherContent() {
       if (current === state.goals.reminderTime && today && !today.completed && Notification.permission === "granted") {
         new Notification("Crunch Watcher", { body: "Your daily check-in is ready." });
       }
+      const workoutStats = getWorkoutStats(state.workoutAssistant?.workouts || []);
+      if (current === (state.goals.workoutReminderTime || "18:00") && workoutStats.weeklyCount < Number(state.goals.exercise.workoutsPerWeek || 0) && Notification.permission === "granted") {
+        new Notification("Crunch Watcher Workout", { body: "Open Workout Assistant and log today's training." });
+      }
     }, 60000);
     return () => window.clearInterval(timer);
   }, [loaded, state]);
+
+  useEffect(() => {
+    setIsOnline(navigator.onLine);
+    setIsStandalone(window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true);
+    if ("Notification" in window) setNotificationPermission(Notification.permission);
+
+    function handleBeforeInstallPrompt(event) {
+      event.preventDefault();
+      setInstallPrompt(event);
+    }
+    function handleInstalled() {
+      setInstallPrompt(null);
+      setIsStandalone(true);
+    }
+    function handleOnline() {
+      setIsOnline(true);
+      setLoadAttempt((attempt) => attempt + 1);
+    }
+    function handleOffline() {
+      setIsOnline(false);
+      setRemoteStatus("Offline mode - changes sync when connection returns");
+    }
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  async function installApp() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  }
+
+  async function enableAppNotifications() {
+    if (!("Notification" in window)) return "Notifications are not supported in this browser.";
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    setState((current) => ({
+      ...current,
+      goals: { ...current.goals, notificationsEnabled: permission === "granted" }
+    }));
+    return permission === "granted" ? "" : "Notifications were not enabled.";
+  }
 
   const currentDay = state.checkIns[state.activeDay - 1] || state.checkIns[0];
   const currentScore = scoreDay(currentDay, state.goals, state.checkIns.slice(0, state.activeDay - 1)).total;
@@ -161,25 +243,34 @@ function CrunchWatcherContent() {
   }
 
   if (auth.loading) return <LoadingScreen message="Checking your account..." />;
-  if (!auth.configured) return <LoginScreen auth={auth} />;
-  if (!auth.user) return <LoginScreen auth={auth} />;
+  if (!auth.configured) return <LoginScreen auth={auth} installPrompt={installPrompt} isStandalone={isStandalone} onInstall={installApp} />;
+  if (!auth.user) return <LoginScreen auth={auth} installPrompt={installPrompt} isStandalone={isStandalone} onInstall={installApp} />;
+  if (!loaded && remoteError) {
+    return (
+      <DatabaseSetupScreen
+        error={remoteError}
+        onRetry={() => setLoadAttempt((attempt) => attempt + 1)}
+        onSignOut={auth.signOut}
+      />
+    );
+  }
   if (!loaded) return <LoadingScreen message={remoteStatus} error={remoteError} />;
 
   return (
-    <main className="min-h-screen bg-cream pb-24 text-ink">
-      <header className="sticky top-0 z-30 border-b-2 border-ink bg-cream/95 px-4 py-3 backdrop-blur">
+    <main className="min-h-screen bg-cream pb-28 text-ink transition-colors duration-500 dark:bg-charcoal dark:text-cream">
+      <header className="sticky top-0 z-30 px-4 py-3">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
-          <button onClick={() => setActiveView("dashboard")} className="flex items-center gap-3 text-left">
-            <span className="grid size-11 place-items-center rounded-full border-2 border-ink bg-paper">
+          <button onClick={() => setActiveView("dashboard")} className="flex items-center gap-3 rounded-full border border-line bg-paper/80 px-3 py-2 text-left shadow-float backdrop-blur dark:bg-dusk/80">
+            <span className="grid size-10 place-items-center rounded-full bg-ink text-cream dark:bg-cream dark:text-charcoal">
               <Dumbbell size={22} strokeWidth={2.6} />
             </span>
             <span>
-              <span className="athletic-title block text-lg leading-tight">Crunch Watcher</span>
-              <span className="text-[10px] font-black uppercase tracking-[0.28em] text-muted">Day {state.activeDay} of {state.goals.programLength}</span>
+              <span className="athletic-title block text-base leading-tight">Crunch Watcher</span>
+              <span className="text-xs font-semibold text-muted">Day {state.activeDay} of {state.goals.programLength}</span>
             </span>
           </button>
           <button
-            className="grid size-10 place-items-center rounded-sm border-2 border-ink bg-cream"
+            className="grid size-11 place-items-center rounded-full border border-line bg-paper/80 shadow-float backdrop-blur transition hover:-translate-y-0.5 dark:bg-dusk/80"
             onClick={() => setState((current) => ({ ...current, darkMode: !current.darkMode }))}
             aria-label="Toggle dark mode"
           >
@@ -192,14 +283,20 @@ function CrunchWatcherContent() {
       {!state.goals.setupComplete ? (
         <SetupScreen goals={state.goals} onSave={(goals) => updateGoals({ ...goals, setupComplete: true })} />
       ) : (
-        <div className="mx-auto grid max-w-6xl gap-4 px-4 py-4 lg:grid-cols-[220px_1fr]">
+        <div className="mx-auto grid max-w-6xl gap-6 px-4 py-4 lg:grid-cols-[92px_1fr]">
           <aside className="hidden lg:block">
             <Navigation activeView={activeView} setActiveView={setActiveView} />
           </aside>
-          <section className="min-w-0">
+          <motion.section
+            className="min-w-0"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+          >
             <AccountStatus
               status={remoteStatus}
               error={remoteError}
+              isOnline={isOnline}
               localImportState={localImportState}
               onImport={async () => {
                 try {
@@ -212,10 +309,18 @@ function CrunchWatcherContent() {
                   setLocalImportState(null);
                   setRemoteStatus("Local data imported");
                 } catch (error) {
-                  setRemoteError(error.message);
+                  setRemoteStatus("Import failed");
+                  setRemoteError(cleanSupabaseError(error, "Could not import local data. I skipped invalid local template IDs, but Supabase still rejected part of the saved data."));
                 }
               }}
               onDismissImport={() => setLocalImportState(null)}
+            />
+            <InstallPromptCard
+              installPrompt={installPrompt}
+              isStandalone={isStandalone}
+              isOnline={isOnline}
+              onInstall={installApp}
+              onOpenInstall={() => setActiveView("install")}
             />
             {!currentDay.completed && <ReminderBanner goals={state.goals} setState={setState} />}
             {activeView === "dashboard" && (
@@ -258,24 +363,37 @@ function CrunchWatcherContent() {
               />
             )}
             {activeView === "rewards" && <Rewards earnedBadges={earnedBadges} />}
+            {activeView === "install" && (
+              <InstallInstructions
+                installPrompt={installPrompt}
+                isStandalone={isStandalone}
+                isOnline={isOnline}
+                notificationPermission={notificationPermission}
+                notificationsEnabled={state.goals.notificationsEnabled}
+                reminderTime={state.goals.reminderTime}
+                workoutReminderTime={state.goals.workoutReminderTime}
+                onInstall={installApp}
+                onEnableNotifications={enableAppNotifications}
+              />
+            )}
             {activeView === "settings" && <SettingsScreen goals={state.goals} onSave={updateGoals} />}
-          </section>
+          </motion.section>
         </div>
       )}
 
       {state.goals.setupComplete && (
-        <div className="fixed inset-x-0 bottom-0 z-40 border-t-2 border-ink bg-cream/95 px-2 pb-2 pt-1 backdrop-blur lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-40 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 lg:hidden">
           <Navigation activeView={activeView} setActiveView={setActiveView} compact />
         </div>
       )}
-      <button className="fixed bottom-24 right-3 z-40 rounded-sm border-2 border-ink bg-cream px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] sm:hidden" onClick={auth.signOut}>
+      <button className="fixed bottom-28 right-3 z-40 rounded-full border border-line bg-paper/90 px-4 py-2 text-xs font-extrabold shadow-float backdrop-blur sm:hidden" onClick={auth.signOut}>
         Sign Out
       </button>
     </main>
   );
 }
 
-function LoginScreen({ auth }) {
+function LoginScreen({ auth, installPrompt, isStandalone, onInstall }) {
   const [mode, setMode] = useState("create");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -321,13 +439,30 @@ function LoginScreen({ auth }) {
   return (
     <main className="min-h-screen bg-cream px-4 py-8 text-ink">
       <div className="mx-auto grid max-w-md gap-4">
-        <div className="border-b-2 border-ink pb-4 text-center">
+        <div className="border-b border-line pb-4 text-center">
           <div className="mx-auto mb-3 grid size-16 place-items-center rounded-full border-2 border-ink bg-paper">
             <Dumbbell size={30} />
           </div>
           <h1 className="athletic-title text-4xl">Crunch Watcher</h1>
           <p className="mt-2 text-sm font-bold text-muted">Sign in to sync your training log, check-ins, rewards, and reports.</p>
         </div>
+
+        {!isStandalone && (
+          <div className="card grid gap-3">
+            <div className="flex items-center gap-3">
+              <Download size={22} />
+              <div>
+                <p className="section-label">Home screen app</p>
+                <h2 className="athletic-title text-lg">Install Crunch Watcher</h2>
+              </div>
+            </div>
+            {installPrompt ? (
+              <button className="touch-button" onClick={onInstall}>Install App</button>
+            ) : (
+              <p className="text-sm font-bold text-muted">On iPhone, open in Safari, tap Share, then Add to Home Screen. On Android, use Install App from Chrome.</p>
+            )}
+          </div>
+        )}
 
         {!auth.configured && (
           <div className="card">
@@ -361,7 +496,7 @@ function LoginScreen({ auth }) {
               </button>
             </div>
 
-            <div className="border-t-2 border-line pt-3">
+            <div className="border-t border-line pt-3">
               <h2 className="athletic-title text-lg">{mode === "create" ? "Create Account" : "Log In"}</h2>
               <div className="mt-3 grid gap-2">
                 <LabeledInput label="Email" type="email" value={email} onChange={setEmail} />
@@ -395,15 +530,46 @@ function LoadingScreen({ message, error }) {
   );
 }
 
-function AccountStatus({ status, error, localImportState, onImport, onDismissImport }) {
+function DatabaseSetupScreen({ error, onRetry, onSignOut }) {
+  const isMissingSchema = /schema cache|could not find|does not exist|relation/i.test(error || "");
+
+  return (
+    <main className="grid min-h-screen place-items-center bg-cream px-4 text-ink">
+      <div className="card max-w-lg">
+        <div className="mx-auto mb-3 grid size-14 place-items-center rounded-full border-2 border-ink bg-paper">
+          <Dumbbell size={26} />
+        </div>
+        <h1 className="athletic-title text-center text-3xl">Database Setup Needed</h1>
+        <p className="mt-3 text-center text-sm font-bold text-muted">
+          Crunch Watcher could sign you in, but Supabase did not return the training tables the app needs.
+        </p>
+        <div className="mt-4 rounded-xl border border-line bg-paper p-3 text-xs font-black uppercase tracking-[0.1em] text-muted">
+          {error}
+        </div>
+        {isMissingSchema && (
+          <p className="mt-3 text-sm font-bold text-muted">
+            Run <span className="font-black text-ink">supabase/schema.sql</span> in the Supabase SQL Editor, then come back and retry.
+          </p>
+        )}
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <button className="touch-button" onClick={onRetry}>Retry</button>
+          <button className="outline-button" onClick={onSignOut}>Sign Out</button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function AccountStatus({ status, error, isOnline, localImportState, onImport, onDismissImport }) {
   return (
     <div className="mb-4 grid gap-2">
-      <div className="rounded-sm border-2 border-line bg-paper px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-muted">
-        {status}
-        {error && <span className="ml-2 text-ink">/ {error}</span>}
+      <div className="flex items-center gap-2 rounded-xl border border-line bg-paper px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-muted">
+        {isOnline ? <Wifi size={15} /> : <WifiOff size={15} />}
+        <span>{status}</span>
+        {error && <span className="text-ink">/ {error}</span>}
       </div>
       {localImportState && (
-        <div className="rounded-sm border-2 border-ink bg-paper p-3">
+        <div className="rounded-xl border border-line bg-paper p-3">
           <h2 className="athletic-title text-lg">Import saved local data?</h2>
           <p className="mt-1 text-sm font-bold text-muted">
             Old local Crunch Watcher data was found on this device. Import it into this Supabase account?
@@ -428,6 +594,7 @@ function normalizeSavedState(saved) {
     },
     customTrackers: saved.goals.customTrackers || []
   };
+  goals.workoutReminderTime = goals.workoutReminderTime || "18:00";
   const programLength = Number(goals.programLength) || 30;
   const checkIns = Array.from({ length: programLength }, (_, index) => {
     const existing = saved.checkIns?.[index] || createEmptyCheckIn(index + 1, goals);
@@ -460,6 +627,14 @@ function normalizeSavedState(saved) {
 }
 
 function normalizeWorkoutAssistant(workoutAssistant) {
+  const templates = workoutAssistant?.templates?.length
+    ? workoutAssistant.templates.map((template, index) => ({
+        ...template,
+        id: template.id ?? `local-template-${index + 1}`,
+        exercises: Array.isArray(template.exercises) ? template.exercises : []
+      }))
+    : defaultWorkoutAssistant.templates;
+
   return {
     ...defaultWorkoutAssistant,
     ...(workoutAssistant || {}),
@@ -468,25 +643,41 @@ function normalizeWorkoutAssistant(workoutAssistant) {
       ...(workoutAssistant?.goals || {})
     },
     workouts: workoutAssistant?.workouts || [],
-    templates: workoutAssistant?.templates?.length ? workoutAssistant.templates : defaultWorkoutAssistant.templates
+    templates
   };
+}
+
+function getScoreTrend(checkIns, goals) {
+  return checkIns.map((entry) => ({
+    day: `D${entry.day}`,
+    score: entry.completed ? scoreDay(entry, goals, checkIns.slice(0, entry.day - 1)).total : 0
+  }));
+}
+
+function cleanSupabaseError(error, fallback) {
+  const message = error?.message || String(error || "");
+  if (/null value in column "id".*workout_templates/i.test(message)) {
+    return "Workout template import failed because old local data contained a blank template ID. Refresh and try Import Local Data again.";
+  }
+  return message || fallback;
 }
 
 function Navigation({ activeView, setActiveView, compact = false }) {
   return (
-    <nav className={compact ? "grid grid-cols-7 gap-1" : "card grid gap-1"}>
+    <nav className={compact ? "grid grid-cols-8 gap-1 rounded-[1.6rem] border border-line bg-paper/90 p-1.5 shadow-soft backdrop-blur dark:bg-dusk/90" : "sticky top-24 grid gap-2 rounded-[1.75rem] border border-line bg-paper/80 p-2 shadow-soft backdrop-blur dark:bg-dusk/80"}>
       {navItems.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           onClick={() => setActiveView(id)}
-          className={`flex min-h-12 items-center justify-center gap-2 rounded-sm px-2 text-[10px] font-black uppercase tracking-[0.08em] transition lg:justify-start lg:px-3 lg:text-xs ${
+          title={label}
+          className={`group flex min-h-12 items-center justify-center gap-2 rounded-2xl px-2 text-[10px] font-bold transition duration-300 lg:min-h-14 lg:px-0 ${
             activeView === id
-              ? "bg-ink text-cream"
-              : "text-muted hover:bg-ink/5"
+              ? "bg-ink text-cream shadow-float dark:bg-cream dark:text-charcoal"
+              : "text-muted hover:bg-ink/5 hover:text-ink dark:hover:bg-cream/10 dark:hover:text-cream"
           }`}
         >
-          <Icon size={18} />
-          <span className={compact ? "sr-only" : ""}>{label}</span>
+          <Icon size={compact ? 19 : 21} strokeWidth={activeView === id ? 2.6 : 2} />
+          <span className={compact ? "sr-only" : "sr-only"}>{label}</span>
         </button>
       ))}
     </nav>
@@ -496,7 +687,7 @@ function Navigation({ activeView, setActiveView, compact = false }) {
 function SetupScreen({ goals, onSave }) {
   return (
     <div className="mx-auto max-w-3xl px-4 py-5">
-      <div className="mb-5 border-b-2 border-ink pb-4 text-center">
+      <div className="mb-5 border-b border-line pb-4 text-center">
         <p className="section-label">Setup / Est 2022</p>
         <h1 className="athletic-title mt-2 text-3xl leading-tight sm:text-5xl">Build your Daily accountability plan</h1>
       </div>
@@ -507,7 +698,25 @@ function SetupScreen({ goals, onSave }) {
 
 function SettingsScreen({ goals, onSave }) {
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-6">
+      <section className="overflow-hidden rounded-[2rem] bg-ink p-6 text-cream shadow-soft dark:bg-dusk sm:p-8">
+        <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-end">
+          <div>
+            <p className="text-sm font-semibold text-cream/70">Day {activeDay} of {goals.programLength}</p>
+            <h1 className="mt-3 max-w-xl text-4xl font-black leading-[0.95] tracking-tight sm:text-6xl">Build the day. Keep the streak.</h1>
+            <p className="mt-4 max-w-md text-base font-semibold text-cream/70">{message}</p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Button onClick={() => setActiveView("today")} className="bg-cream text-ink hover:bg-cream">Start Check-In</Button>
+              <Button variant="secondary" onClick={() => setActiveView("workout")} className="border-cream/15 bg-cream/10 text-cream hover:border-cream/40">Workout Assistant</Button>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <HeroMiniStat label="Today Score" value={today.completed ? currentScore : "Open"} />
+            <HeroMiniStat label="Recovery" value={`${recoveryScore}%`} />
+            <HeroMiniStat label="Streak" value={weeklyStats.streak} />
+          </div>
+        </div>
+      </section>
       <ScreenTitle title="Build your Daily accountability plan" subtitle="Tune the goals without losing past check-ins." />
       <GoalEditor goals={goals} onSave={onSave} saveLabel="Save goals" />
     </div>
@@ -565,6 +774,7 @@ function GoalEditor({ goals, onSave, saveLabel }) {
         <LabeledInput label="Workouts per week" type="number" value={draft.exercise.workoutsPerWeek} onChange={(value) => update(["exercise", "workoutsPerWeek"], Number(value))} />
         <LabeledInput label="Daily movement goal" value={draft.exercise.dailyMovement} onChange={(value) => update(["exercise", "dailyMovement"], value)} />
         <LabeledInput label="Duration goal minutes" type="number" value={draft.exercise.durationGoal} onChange={(value) => update(["exercise", "durationGoal"], Number(value))} />
+        <LabeledInput label="Workout reminder time" type="time" value={draft.workoutReminderTime || "18:00"} onChange={(value) => update(["workoutReminderTime"], value)} />
         <Toggle label="Track alcohol" checked={draft.trackAlcohol} onChange={(value) => update(["trackAlcohol"], value)} />
         <Toggle label="Track sugars/sweets" checked={draft.trackSweets} onChange={(value) => update(["trackSweets"], value)} />
       </div>
@@ -586,7 +796,7 @@ function GoalEditor({ goals, onSave, saveLabel }) {
               items[index] = { ...item, dailyMax: Number(event.target.value) };
               update(["carbItems"], items);
             }} />
-            <button className="rounded-sm border-2 border-ink bg-cream font-black" onClick={() => update(["carbItems"], draft.carbItems.filter((_, itemIndex) => itemIndex !== index))}>x</button>
+            <button className="rounded-xl border border-line bg-cream font-black" onClick={() => update(["carbItems"], draft.carbItems.filter((_, itemIndex) => itemIndex !== index))}>x</button>
           </div>
         ))}
       </div>
@@ -603,7 +813,7 @@ function GoalEditor({ goals, onSave, saveLabel }) {
               habits[index] = { ...habit, name: event.target.value };
               update(["customHabits"], habits);
             }} />
-            <button className="rounded-sm border-2 border-ink bg-cream font-black" onClick={() => update(["customHabits"], draft.customHabits.filter((_, habitIndex) => habitIndex !== index))}>x</button>
+            <button className="rounded-xl border border-line bg-cream font-black" onClick={() => update(["customHabits"], draft.customHabits.filter((_, habitIndex) => habitIndex !== index))}>x</button>
           </div>
         ))}
       </div>
@@ -625,7 +835,7 @@ function GoalEditor({ goals, onSave, saveLabel }) {
               trackers[index] = { ...tracker, dailyGoal: Number(event.target.value) };
               update(["customTrackers"], trackers);
             }} />
-            <button className="rounded-sm border-2 border-ink bg-cream font-black" onClick={() => update(["customTrackers"], (draft.customTrackers || []).filter((_, trackerIndex) => trackerIndex !== index))}>x</button>
+            <button className="rounded-xl border border-line bg-cream font-black" onClick={() => update(["customTrackers"], (draft.customTrackers || []).filter((_, trackerIndex) => trackerIndex !== index))}>x</button>
           </div>
         ))}
       </div>
@@ -637,6 +847,10 @@ function GoalEditor({ goals, onSave, saveLabel }) {
 
 function Dashboard({ goals, checkIns, activeDay, setActiveDay, setActiveView, weeklyStats, currentScore }) {
   const today = checkIns[activeDay - 1];
+  const trendData = getScoreTrend(checkIns, goals).slice(-10);
+  const waterPercent = Math.min(100, Math.round((Number(today.waterConsumed || 0) / Math.max(Number(goals.water.amount || 1), 1)) * 100));
+  const workoutPercent = Math.min(100, Math.round((weeklyStats.totalWorkouts / Math.max(Number(goals.exercise.workoutsPerWeek || 1), 1)) * 100));
+  const recoveryScore = Math.round((currentScore + waterPercent + workoutPercent) / 3);
   const remainingCarbs = goals.carbItems.map((goal) => {
     const used = Number(today.carbs.find((item) => item.id === goal.id)?.quantity || 0);
     return `${goal.name}: ${Math.max(goal.dailyMax - used, 0)} left`;
@@ -647,27 +861,34 @@ function Dashboard({ goals, checkIns, activeDay, setActiveDay, setActiveView, we
     <div className="grid gap-4">
       <ScreenTitle title="Today’s Check-In" subtitle={message} />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label={`Day ${activeDay} of ${goals.programLength}`} value={today.completed ? `${currentScore}/100` : "Open"} hint={today.completed ? "Checked in" : "Check-in open"} />
-        <StatCard label="Current streak" value={`${weeklyStats.streak} days`} hint="70+ score days" />
-        <StatCard label="Weekly average" value={weeklyStats.completedDays ? `${weeklyStats.average}/100` : "No score"} hint={`Week ${getWeekNumber(activeDay)} / ${weeklyStats.completedDays} logged`} />
-        <StatCard label="Workouts" value={`${weeklyStats.totalWorkouts}/${goals.exercise.workoutsPerWeek}`} hint="This week" />
+        <StatCard label="Today Score" value={today.completed ? currentScore : "Open"} hint={today.completed ? "out of 100" : "Check-in waiting"} />
+        <StatCard label="Recovery" value={`${recoveryScore}%`} hint="Score, water, training balance" />
+        <StatCard label="Weekly Average" value={weeklyStats.completedDays ? weeklyStats.average : "No score"} hint={`Week ${getWeekNumber(activeDay)} / ${weeklyStats.completedDays} logged`} />
+        <StatCard label="Workout Progress" value={`${weeklyStats.totalWorkouts}/${goals.exercise.workoutsPerWeek}`} hint="This week" />
       </div>
       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="card grid gap-4">
-          <div className="flex items-center justify-between gap-3 border-b-2 border-ink pb-3">
-            <h2 className="athletic-title text-xl">Training Log</h2>
-            <button className="touch-button" onClick={() => setActiveView("today")}>Check in</button>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="section-label">Weekly trend</p>
+              <h2 className="text-2xl font-black tracking-tight">Performance curve</h2>
+            </div>
+            <span className="rounded-full bg-ink px-3 py-1 text-xs font-bold text-cream dark:bg-cream dark:text-charcoal">{weeklyStats.average || 0}/100</span>
           </div>
+          <ScoreTrendChart data={trendData} />
           <Progress label="Water" value={today.waterConsumed} max={goals.water.amount} suffix={goals.water.unit} />
           <Progress label="Exercise minutes" value={today.exercise.duration} max={goals.exercise.durationGoal || 30} suffix="min" />
           <div>
             <p className="section-label mb-2">Remaining carb allowance</p>
             <div className="flex flex-wrap gap-2">
-              {remainingCarbs.map((item) => <span key={item} className="rounded-sm border-2 border-ink bg-cream px-3 py-2 text-xs font-black uppercase tracking-[0.08em]">{item}</span>)}
+              {remainingCarbs.map((item) => <span key={item} className="rounded-full border border-line bg-cream/70 px-3 py-2 text-xs font-bold text-muted dark:bg-charcoal/70">{item}</span>)}
             </div>
           </div>
         </div>
-        <DayPicker checkIns={checkIns} activeDay={activeDay} programLength={goals.programLength} setActiveDay={setActiveDay} />
+        <div className="grid gap-4">
+          <HydrationRing percent={waterPercent} value={today.waterConsumed} max={goals.water.amount} unit={goals.water.unit} />
+          <DayPicker checkIns={checkIns} activeDay={activeDay} programLength={goals.programLength} setActiveDay={setActiveDay} />
+        </div>
       </div>
     </div>
   );
@@ -697,10 +918,10 @@ function DailyCheckIn({ goals, checkIn, score, onChange }) {
     <div className="grid gap-4">
       <ScreenTitle title={`Day ${checkIn.day} of ${goals.programLength} Training Log`} subtitle="Enter what happened. The score updates instantly." />
       <div className="card grid gap-4">
-        <div className={`grid aspect-square w-32 place-items-center rounded-full border-4 border-ink ${scoreColor(score)}`}>
+        <div className="grid aspect-square w-36 place-items-center rounded-full bg-ink text-cream shadow-soft dark:bg-cream dark:text-charcoal">
           <div className="text-center">
-            <p className="athletic-title text-4xl">{score}</p>
-            <p className="text-[10px] font-black uppercase tracking-[0.16em]">out of 100</p>
+            <p className="text-5xl font-black tracking-tight">{score}</p>
+            <p className="text-xs font-semibold opacity-70">out of 100</p>
           </div>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -782,7 +1003,7 @@ function DailyCheckIn({ goals, checkIn, score, onChange }) {
       <div className="card grid gap-3">
         <div className="grid gap-3">
           <h2 className="athletic-title text-lg">Progress photos</h2>
-          <label className="flex min-h-24 cursor-pointer items-center justify-center gap-2 rounded-sm border-2 border-dashed border-ink bg-cream px-4 text-sm font-black uppercase tracking-[0.1em]">
+          <label className="flex min-h-24 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-line bg-cream px-4 text-sm font-black uppercase tracking-[0.1em]">
             <Upload size={18} />
             Upload pictures
             <input className="sr-only" type="file" accept="image/*" multiple onChange={(event) => addPhotos(event.target.files)} />
@@ -790,10 +1011,10 @@ function DailyCheckIn({ goals, checkIn, score, onChange }) {
           {!!checkIn.photos?.length && (
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
               {checkIn.photos.map((photo) => (
-                <div key={photo.id} className="group relative overflow-hidden rounded-sm border-2 border-ink bg-cream">
+                <div key={photo.id} className="group relative overflow-hidden rounded-xl border border-line bg-cream">
                   <img src={photo.dataUrl} alt={photo.name || "Daily check-in upload"} className="aspect-square w-full object-cover" />
                   <button
-                    className="absolute right-1 top-1 rounded-sm bg-ink px-2 py-1 text-xs font-black text-cream opacity-90"
+                    className="absolute right-1 top-1 rounded-xl bg-ink px-2 py-1 text-xs font-black text-cream opacity-90"
                     onClick={() => onChange({ photos: checkIn.photos.filter((item) => item.id !== photo.id) })}
                   >
                     x
@@ -816,20 +1037,30 @@ function DailyCheckIn({ goals, checkIn, score, onChange }) {
 function Timeline({ goals, checkIns, activeDay, onSelect }) {
   return (
     <div className="grid gap-4">
-      <ScreenTitle title="Training Log" subtitle="A minimalist 30-day record of completed and missed sessions." />
-      <div className="card grid grid-cols-5 gap-2 sm:grid-cols-7 md:grid-cols-10">
+      <ScreenTitle title="Training Log" subtitle="A softer view of completed days, missed days, and score momentum." />
+      <div className="card">
+        <div className="mb-5 flex items-center justify-between">
+          <div>
+            <p className="section-label">Timeline</p>
+            <h2 className="text-2xl font-black tracking-tight">{goals.programLength}-day discipline map</h2>
+          </div>
+          <span className="rounded-full bg-ink px-3 py-1 text-xs font-bold text-cream dark:bg-cream dark:text-charcoal">{checkIns.filter((entry) => entry.completed).length}/{goals.programLength}</span>
+        </div>
+        <div className="grid grid-cols-5 gap-2 sm:grid-cols-7 md:grid-cols-10">
         {checkIns.map((entry) => {
           const score = scoreDay(entry, goals, checkIns.slice(0, entry.day - 1)).total;
+          const status = !entry.completed ? "bg-cream/70 text-muted dark:bg-charcoal/70" : score >= 85 ? "bg-mint/25 text-ink dark:text-cream" : score >= 70 ? "bg-gold/25 text-ink dark:text-cream" : "bg-coral/25 text-ink dark:text-cream";
           return (
             <button
               key={entry.day}
               onClick={() => onSelect(entry.day)}
-              className={`aspect-square rounded-sm border-2 text-sm font-black ${entry.completed ? scoreColor(score) : "border-line bg-cream text-muted"} ${activeDay === entry.day ? "ring-2 ring-ink ring-offset-2 ring-offset-cream" : ""}`}
+              className={`aspect-square rounded-full text-sm font-bold transition hover:-translate-y-0.5 ${status} ${activeDay === entry.day ? "ring-2 ring-ink ring-offset-2 ring-offset-cream dark:ring-cream dark:ring-offset-charcoal" : ""}`}
             >
               {entry.day}
             </button>
           );
         })}
+        </div>
       </div>
     </div>
   );
@@ -867,14 +1098,15 @@ function WeeklyReport({ checkIns, goals, week, earnedBadges }) {
         <StatCard label="Minutes" value={stats.totalExerciseMinutes} hint={`${stats.totalWorkouts} workouts`} />
       </div>
       <div className="card grid gap-3">
-        <h2 className="athletic-title text-lg">Daily scores</h2>
+        <h2 className="text-xl font-black tracking-tight">Daily scores</h2>
+        <ScoreTrendChart data={stats.entries.map(({ entry, score }) => ({ day: `D${entry.day}`, score: entry.completed ? score : 0 }))} />
         {stats.entries.map(({ entry, score }) => (
           <Progress key={entry.day} label={`Day ${entry.day}`} value={entry.completed ? score : 0} max={100} suffix={entry.completed ? "score" : "missed"} />
         ))}
       </div>
       <div className="card grid gap-3">
         <h2 className="athletic-title text-lg">Copy-ready report</h2>
-        <pre className="whitespace-pre-wrap rounded-sm border-2 border-line bg-cream p-3 text-sm font-bold leading-6">{report}</pre>
+        <pre className="whitespace-pre-wrap rounded-xl border border-line bg-cream p-3 text-sm font-bold leading-6">{report}</pre>
         <div className="grid gap-2 sm:grid-cols-2">
           <button className="touch-button" onClick={copyReport}>{copied ? "Copied" : "Copy Report"}</button>
           <button className="outline-button" onClick={shareReport}>Share Report</button>
@@ -885,7 +1117,7 @@ function WeeklyReport({ checkIns, goals, week, earnedBadges }) {
           <h2 className="athletic-title text-lg">Report photos</h2>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
             {reportPhotos.map((photo) => (
-              <figure key={photo.id} className="overflow-hidden rounded-sm border-2 border-ink bg-cream">
+              <figure key={photo.id} className="overflow-hidden rounded-xl border border-line bg-cream">
                 <img src={photo.dataUrl} alt={photo.name || `Day ${photo.day} upload`} className="aspect-square w-full object-cover" />
                 <figcaption className="px-2 py-1 text-xs font-black uppercase tracking-[0.1em] text-muted">Day {photo.day}</figcaption>
               </figure>
@@ -905,10 +1137,10 @@ function WeeklyReport({ checkIns, goals, week, earnedBadges }) {
           )}
         </div>
       </div>
-      <div className="rounded-sm border-4 border-ink bg-paper p-5 text-ink shadow-soft">
+      <div className="rounded-2xl border border-line bg-paper p-5 text-ink shadow-soft">
         <p className="section-label">Download / Share Image</p>
         <h2 className="athletic-title mt-2 text-4xl">Week {week}: {stats.average}/100</h2>
-        <p className="mt-3 border-t-2 border-ink pt-3 text-sm font-black uppercase tracking-[0.12em]">{stats.totalWorkouts} workouts / {stats.waterHits} water hits / {stats.streak} day streak</p>
+        <p className="mt-3 border-t border-line pt-3 text-sm font-black uppercase tracking-[0.12em]">{stats.totalWorkouts} workouts / {stats.waterHits} water hits / {stats.streak} day streak</p>
       </div>
     </div>
   );
@@ -940,11 +1172,11 @@ function WorkoutAssistant({ workoutAssistant, onChange }) {
   return (
     <div className="grid gap-4">
       <ScreenTitle title="Workout Assistant" subtitle="Smart training recommendations, logging, recovery, and progress." />
-      <div className="card grid grid-cols-5 gap-1">
+      <div className="grid grid-cols-5 gap-1 rounded-[1.5rem] border border-line bg-paper/80 p-1.5 shadow-float backdrop-blur dark:bg-dusk/80">
         {tabs.map((item) => (
           <button
             key={item}
-            className={`min-h-11 rounded-sm px-2 text-[10px] font-black uppercase tracking-[0.08em] ${tab === item ? "bg-ink text-cream" : "bg-cream text-muted"}`}
+            className={`min-h-11 rounded-2xl px-2 text-xs font-bold capitalize transition ${tab === item ? "bg-ink text-cream shadow-float dark:bg-cream dark:text-charcoal" : "text-muted hover:bg-ink/5 dark:hover:bg-cream/10"}`}
             onClick={() => setTab(item)}
           >
             {item}
@@ -1023,7 +1255,7 @@ function WorkoutToday({ workoutAssistant, recommendation, recovery, stats, onCha
             <StatCard label="Weekly count" value={`${stats.weeklyCount}/${workoutAssistant.goals.weeklyFrequency}`} hint="Logged" />
             <StatCard label="Last workout" value={stats.lastWorkout?.type || "None"} hint={stats.lastWorkout ? new Date(stats.lastWorkout.date).toLocaleDateString() : "Start today"} />
           </div>
-          <div className="rounded-sm border-2 border-ink bg-cream p-3">
+          <div className="rounded-xl border border-line bg-cream p-3">
             <p className="section-label">Suggested focus</p>
             <p className="mt-1 text-lg font-black">{recommendation.focus}</p>
           </div>
@@ -1046,7 +1278,7 @@ function WorkoutToday({ workoutAssistant, recommendation, recovery, stats, onCha
       </div>
 
       <div className="card grid gap-3">
-        <div className="flex items-center justify-between gap-3 border-b-2 border-ink pb-3">
+        <div className="flex items-center justify-between gap-3 border-b border-line pb-3">
           <h2 className="athletic-title text-xl">Log Workout</h2>
           <button className="outline-button" onClick={() => setDraft(createWorkout({ ...draft, name: stats.lastWorkout?.name || recommendation.title, type: stats.lastWorkout?.type || recommendation.type, exercises: stats.lastWorkout?.exercises?.map((exercise) => ({ ...exercise, id: crypto.randomUUID() })) || [createExercise()] }))}>Repeat Last</button>
         </div>
@@ -1118,7 +1350,7 @@ function ExerciseEditor({ exercise, onChange, onRemove }) {
   }
 
   return (
-    <div className="rounded-sm border-2 border-line bg-cream p-3">
+    <div className="rounded-xl border border-line bg-cream p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <input className="field" value={exercise.name} placeholder="Exercise" onChange={(event) => setField("name", event.target.value)} />
         <button className="outline-button" onClick={onRemove}>Remove</button>
@@ -1176,7 +1408,7 @@ function WorkoutSummary({ workout }) {
   const bestLift = (workout.exercises || []).filter((exercise) => Number(exercise.weight)).sort((a, b) => Number(b.weight) - Number(a.weight))[0];
 
   return (
-    <article className="rounded-sm border-2 border-line bg-cream p-3">
+    <article className="rounded-xl border border-line bg-cream p-3">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="section-label">{new Date(workout.date).toLocaleDateString()} / {workout.type}</p>
@@ -1185,7 +1417,7 @@ function WorkoutSummary({ workout }) {
         <span className="rounded-full border-2 border-ink px-3 py-1 text-xs font-black uppercase tracking-[0.1em]">{workout.intensity}</span>
       </div>
       <p className="mt-2 text-sm font-bold text-muted">{workout.duration} min / {workout.exercises?.length || 0} exercises{totalDistance ? ` / ${totalDistance} mi` : ""}{bestLift ? ` / Best lift ${bestLift.name} ${bestLift.weight} lb` : ""}</p>
-      {workout.performanceNote && <p className="mt-2 border-t-2 border-line pt-2 text-sm font-bold">{workout.performanceNote}</p>}
+      {workout.performanceNote && <p className="mt-2 border-t border-line pt-2 text-sm font-bold">{workout.performanceNote}</p>}
     </article>
   );
 }
@@ -1244,20 +1476,21 @@ function WorkoutProgress({ stats, workouts }) {
         <StatCard label="Avg pace" value={stats.averagePace} hint="Running" />
       </div>
       <div className="card grid gap-3">
-        <h2 className="athletic-title text-lg">Training Trend</h2>
-        <div className="flex h-36 items-end gap-2 border-b-2 border-ink">
-          {lastSix.map((workout) => (
-            <div key={workout.id} className="flex flex-1 flex-col items-center gap-2">
-              <div className="w-full border-2 border-ink bg-ink" style={{ height: `${Math.max(8, (Number(workout.duration || 0) / maxMinutes) * 120)}px` }} />
-              <span className="text-[10px] font-black uppercase tracking-[0.08em]">{workout.type.slice(0, 3)}</span>
-            </div>
-          ))}
+        <h2 className="text-xl font-black tracking-tight">Training Trend</h2>
+        <div className="h-44">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={lastSix.map((workout) => ({ type: workout.type.slice(0, 3), minutes: Number(workout.duration || 0) }))}>
+              <XAxis dataKey="type" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#5C5C5C" }} />
+              <Tooltip contentStyle={{ borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", background: "#FBF9F5", color: "#111111" }} />
+              <Bar dataKey="minutes" fill="currentColor" radius={[10, 10, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
       <div className="card grid gap-3">
         <h2 className="athletic-title text-lg">Personal Records</h2>
         {stats.personalRecords.length ? stats.personalRecords.map((record) => (
-          <div key={record.label} className="flex items-center justify-between border-b-2 border-line py-2">
+          <div key={record.label} className="flex items-center justify-between border-b border-line py-2">
             <span className="font-black">{record.label}</span>
             <span className="athletic-title text-xl">{record.value} {record.unit}</span>
           </div>
@@ -1324,18 +1557,113 @@ function Rewards({ earnedBadges }) {
       </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {Object.entries(badgeLabels).map(([key, label]) => (
-          <div key={key} className={`card ${earnedBadges[key] ? "bg-paper" : "bg-cream opacity-55"}`}>
-            <div className="flex items-start gap-3">
-              <span className={`grid size-14 shrink-0 place-items-center rounded-full border-2 border-ink ${earnedBadges[key] ? "bg-ink text-cream" : "bg-cream text-ink"}`}>
+          <div key={key} className={`card ${earnedBadges[key] ? "bg-[linear-gradient(145deg,#FBF9F5,#F1ECE2)] dark:bg-dusk" : "bg-paper/50 opacity-55"}`}>
+            <div className="flex items-start gap-4">
+              <span className={`grid size-16 shrink-0 place-items-center rounded-[1.4rem] border ${earnedBadges[key] ? "border-ink bg-ink text-cream shadow-float dark:border-cream dark:bg-cream dark:text-charcoal" : "border-line bg-cream/70 text-muted dark:bg-charcoal/70"}`}>
                 <Medal size={21} />
               </span>
               <div>
-                <h2 className="athletic-title text-base">{label}</h2>
-                <p className="mt-1 text-sm font-bold text-muted">{descriptions[key]}</p>
+                <h2 className="text-lg font-black tracking-tight">{label}</h2>
+                <p className="mt-1 text-sm font-semibold leading-6 text-muted">{descriptions[key]}</p>
               </div>
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function InstallPromptCard({ installPrompt, isStandalone, isOnline, onInstall, onOpenInstall }) {
+  if (isStandalone) return null;
+
+  return (
+    <div className="mb-4 rounded-xl border border-line bg-paper p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="section-label">{isOnline ? "Mobile app ready" : "Offline mode active"}</p>
+          <h2 className="athletic-title mt-1 text-xl">Install Crunch Watcher</h2>
+          <p className="mt-1 text-sm font-bold text-muted">Add the tracker to your home screen for standalone use, reminders, and cached access.</p>
+        </div>
+        <Download size={24} />
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {installPrompt && <button className="touch-button" onClick={onInstall}>Install App</button>}
+        <button className={installPrompt ? "outline-button" : "touch-button"} onClick={onOpenInstall}>Install Help</button>
+      </div>
+    </div>
+  );
+}
+
+function InstallInstructions({ installPrompt, isStandalone, isOnline, notificationPermission, notificationsEnabled, reminderTime, workoutReminderTime, onInstall, onEnableNotifications }) {
+  const [message, setMessage] = useState("");
+  const isIOS = typeof navigator !== "undefined" && /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  async function requestNotifications() {
+    const result = await onEnableNotifications();
+    setMessage(result || "Notifications enabled for check-ins and workout reminders.");
+  }
+
+  return (
+    <div className="grid gap-4">
+      <ScreenTitle title="Install Crunch Watcher" subtitle="Use it like a home-screen training journal with cached pages and reminders." />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <StatCard label="Install status" value={isStandalone ? "Installed" : "Browser"} hint={isStandalone ? "Standalone mode" : "Add to home screen"} />
+        <StatCard label="Connection" value={isOnline ? "Online" : "Offline"} hint={isOnline ? "Sync enabled" : "Cached mode"} />
+        <StatCard label="Notifications" value={notificationPermission} hint={notificationsEnabled ? "Reminders active" : "Tap to enable"} />
+      </div>
+
+      <div className="card grid gap-3">
+        <div className="flex items-center gap-3">
+          <span className="grid size-12 place-items-center rounded-full border-2 border-ink bg-cream"><Download size={22} /></span>
+          <div>
+            <p className="section-label">Home screen app</p>
+            <h2 className="athletic-title text-2xl">Standalone Install</h2>
+          </div>
+        </div>
+        {installPrompt ? (
+          <button className="touch-button" onClick={onInstall}>Install Crunch Watcher</button>
+        ) : (
+          <p className="text-sm font-bold text-muted">
+            {isIOS ? "On iPhone, use Safari's Share button, then choose Add to Home Screen." : "Use your browser menu and choose Install App or Add to Home Screen."}
+          </p>
+        )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="card grid gap-3">
+          <h2 className="athletic-title text-xl">iPhone</h2>
+          <ol className="grid gap-2 text-sm font-bold text-muted">
+            <li>1. Open Crunch Watcher in Safari.</li>
+            <li>2. Tap the Share icon.</li>
+            <li>3. Choose Add to Home Screen.</li>
+            <li>4. Open Crunch Watcher from the new icon.</li>
+          </ol>
+        </div>
+        <div className="card grid gap-3">
+          <h2 className="athletic-title text-xl">Android</h2>
+          <ol className="grid gap-2 text-sm font-bold text-muted">
+            <li>1. Open Crunch Watcher in Chrome.</li>
+            <li>2. Tap Install when prompted, or open the browser menu.</li>
+            <li>3. Choose Install App or Add to Home Screen.</li>
+            <li>4. Launch it from your home screen.</li>
+          </ol>
+        </div>
+      </div>
+
+      <div className="card grid gap-3">
+        <div className="flex items-center gap-3">
+          <Bell size={22} />
+          <div>
+            <p className="section-label">Reminders</p>
+            <h2 className="athletic-title text-xl">Check-In & Workout Notifications</h2>
+          </div>
+        </div>
+        <p className="text-sm font-bold text-muted">
+          Daily check-in reminders use {reminderTime}. Workout reminders use {workoutReminderTime || "18:00"}. Browser support varies, especially on iPhone, where notifications work best after installing the app.
+        </p>
+        <button className="touch-button" onClick={requestNotifications}>Enable Notifications</button>
+        {message && <p className="text-sm font-black text-ink">{message}</p>}
       </div>
     </div>
   );
@@ -1352,7 +1680,7 @@ function ReminderBanner({ goals, setState }) {
   }
 
   return (
-    <div className="mb-4 flex items-center justify-between gap-3 rounded-sm border-2 border-ink bg-paper p-3 text-sm">
+    <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-line bg-paper p-3 text-sm">
       <div className="flex items-center gap-2">
         <Bell size={18} />
         <span className="font-black uppercase tracking-[0.08em]">Today’s check-in is still open. Reminder set for {goals.reminderTime}.</span>
@@ -1365,12 +1693,18 @@ function ReminderBanner({ goals, setState }) {
 function DayPicker({ checkIns, activeDay, programLength, setActiveDay }) {
   return (
     <div className="card">
-      <h2 className="athletic-title mb-3 text-lg">Jump to day / {programLength}</h2>
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <p className="section-label">Program timeline</p>
+          <h2 className="text-xl font-black tracking-tight">Day {activeDay} of {programLength}</h2>
+        </div>
+        <span className="rounded-full bg-ink px-3 py-1 text-xs font-bold text-cream dark:bg-cream dark:text-charcoal">{Math.round((activeDay / programLength) * 100)}%</span>
+      </div>
       <div className="grid grid-cols-6 gap-2">
         {checkIns.map((entry) => (
           <button
             key={entry.day}
-            className={`aspect-square rounded-sm border-2 text-sm font-black ${activeDay === entry.day ? "border-ink bg-ink text-cream" : "border-line bg-cream text-ink"}`}
+            className={`aspect-square rounded-full text-sm font-bold transition ${activeDay === entry.day ? "bg-ink text-cream shadow-float dark:bg-cream dark:text-charcoal" : entry.completed ? "bg-mint/20 text-ink dark:text-cream" : "bg-cream/70 text-muted dark:bg-charcoal/70"}`}
             onClick={() => setActiveDay(entry.day)}
           >
             {entry.day}
@@ -1383,21 +1717,73 @@ function DayPicker({ checkIns, activeDay, programLength, setActiveDay }) {
 
 function ScreenTitle({ title, subtitle }) {
   return (
-    <div className="border-b-2 border-ink pb-3">
-      <p className="section-label">Crunch Watcher / Est 2022</p>
-      <h1 className="athletic-title mt-1 text-2xl leading-tight sm:text-4xl">{title}</h1>
-      <p className="mt-1 text-sm font-bold text-muted">{subtitle}</p>
+    <div className="pb-1">
+      <p className="section-label">Crunch Watcher</p>
+      <h1 className="mt-2 text-3xl font-black leading-tight tracking-tight sm:text-5xl">{title}</h1>
+      <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-muted">{subtitle}</p>
+    </div>
+  );
+}
+
+function HeroMiniStat({ label, value }) {
+  return (
+    <div className="rounded-2xl border border-cream/15 bg-cream/10 p-3 backdrop-blur">
+      <p className="text-[11px] font-semibold text-cream/60">{label}</p>
+      <p className="mt-2 text-2xl font-black tracking-tight">{value}</p>
+    </div>
+  );
+}
+
+function ScoreTrendChart({ data }) {
+  return (
+    <div className="h-44 w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 10, right: 4, left: 4, bottom: 0 }}>
+          <defs>
+            <linearGradient id="scoreFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="currentColor" stopOpacity={0.18} />
+              <stop offset="95%" stopColor="currentColor" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#5C5C5C" }} />
+          <Tooltip contentStyle={{ borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", background: "#FBF9F5", color: "#111111" }} />
+          <Area type="monotone" dataKey="score" stroke="currentColor" strokeWidth={2} fill="url(#scoreFill)" dot={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function HydrationRing({ percent, value, max, unit }) {
+  const data = [{ name: "Water", value: percent, fill: "currentColor" }];
+  return (
+    <div className="card grid place-items-center text-center">
+      <p className="section-label">Hydration</p>
+      <div className="relative mt-2 size-44 text-ink dark:text-cream">
+        <ResponsiveContainer width="100%" height="100%">
+          <RadialBarChart innerRadius="72%" outerRadius="94%" data={data} startAngle={90} endAngle={-270}>
+            <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
+            <RadialBar dataKey="value" cornerRadius={20} background={{ fill: "rgba(0,0,0,0.08)" }} />
+          </RadialBarChart>
+        </ResponsiveContainer>
+        <div className="absolute inset-0 grid place-items-center">
+          <div>
+            <p className="text-4xl font-black tracking-tight">{percent}%</p>
+            <p className="text-xs font-semibold text-muted">{value}/{max} {unit}</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
 function StatCard({ label, value, hint }) {
   return (
-    <div className="card">
+    <motion.div className="card" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
       <p className="section-label">{label}</p>
-      <p className="athletic-title mt-2 text-4xl">{value}</p>
-      <p className="mt-1 text-xs font-black uppercase tracking-[0.14em] text-muted">{hint}</p>
-    </div>
+      <p className="mt-3 text-4xl font-black tracking-tight">{value}</p>
+      <p className="mt-1 text-xs font-semibold text-muted">{hint}</p>
+    </motion.div>
   );
 }
 
@@ -1405,12 +1791,12 @@ function Progress({ label, value, max, suffix }) {
   const percent = Math.min(100, Math.round((Number(value || 0) / Math.max(Number(max || 1), 1)) * 100));
   return (
     <div>
-      <div className="mb-2 flex justify-between gap-3 text-sm font-bold">
+      <div className="mb-2 flex justify-between gap-3 text-sm font-semibold">
         <span>{label}</span>
         <span className="text-muted">{value}/{max} {suffix}</span>
       </div>
-      <div className="h-3 overflow-hidden rounded-full border-2 border-ink bg-cream">
-        <div className="h-full rounded-full bg-ink" style={{ width: `${percent}%` }} />
+      <div className="h-2 overflow-hidden rounded-full bg-ink/10 dark:bg-cream/10">
+        <motion.div className="h-full rounded-full bg-ink dark:bg-cream" initial={{ width: 0 }} animate={{ width: `${percent}%` }} transition={{ duration: 0.7, ease: "easeOut" }} />
       </div>
     </div>
   );
@@ -1431,7 +1817,7 @@ function ProgressInput({ label, value, max, onChange }) {
 
 function LabeledInput({ label, value, onChange, type = "text" }) {
   return (
-    <label className="grid gap-1 text-xs font-black uppercase tracking-[0.12em]">
+    <label className="grid gap-2 text-xs font-bold text-muted">
       {label}
       <input className="field" type={type} value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
@@ -1440,9 +1826,10 @@ function LabeledInput({ label, value, onChange, type = "text" }) {
 
 function Toggle({ label, checked, onChange }) {
   return (
-    <label className={`flex min-h-12 items-center justify-between gap-3 rounded-sm border-2 px-3 text-sm font-black uppercase tracking-[0.08em] ${checked ? "border-ink bg-ink text-cream" : "border-ink bg-cream text-ink"}`}>
+    <label className={`flex min-h-14 items-center justify-between gap-3 rounded-2xl border px-4 text-sm font-bold shadow-float transition ${checked ? "border-ink bg-ink text-cream dark:border-cream dark:bg-cream dark:text-charcoal" : "border-line bg-paper/80 text-ink dark:text-cream"}`}>
       <span>{label}</span>
       <input className="size-5 accent-ink" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
     </label>
   );
 }
+

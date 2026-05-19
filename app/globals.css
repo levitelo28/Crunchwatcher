@@ -4,22 +4,45 @@
 
 :root {
   color-scheme: light;
+  --bg: #f6f3ed;
+  --card: #fbf9f5;
+  --ink: #111111;
+  --muted: #5c5c5c;
+  --line: rgba(0, 0, 0, 0.08);
+  --success: #6f8064;
+  --warning: #b39558;
+  --danger: #a76658;
 }
 
 .dark {
   color-scheme: dark;
+  --bg: #1f1d1a;
+  --card: #2a2723;
+  --ink: #f6f3ed;
+  --muted: #c4bdb1;
+  --line: rgba(246, 243, 237, 0.12);
+  --success: #a6b69b;
+  --warning: #d0b675;
+  --danger: #d28a7d;
 }
 
 body {
   margin: 0;
-  background: #f5f1ea;
-  color: #111111;
+  background:
+    radial-gradient(circle at top left, rgba(17, 17, 17, 0.045), transparent 34rem),
+    var(--bg);
+  color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
+  overscroll-behavior-y: none;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .dark body {
-  background: #f5f1ea;
-  color: #111111;
+  background:
+    radial-gradient(circle at top left, rgba(246, 243, 237, 0.08), transparent 32rem),
+    var(--bg);
+  color: var(--ink);
 }
 
 * {
@@ -31,32 +54,66 @@ input,
 select,
 textarea {
   font: inherit;
+  font-size: 16px;
+}
+
+button,
+input,
+select,
+textarea {
+  color: inherit;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+@media (display-mode: standalone) {
+  body {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
 }
 
 @layer components {
   .card {
-    @apply rounded-sm border-2 border-ink bg-paper p-4 shadow-soft;
+    @apply rounded-2xl border border-line bg-paper/90 p-5 shadow-soft backdrop-blur transition duration-300;
   }
 
   .touch-button {
-    @apply min-h-11 rounded-sm border-2 border-ink bg-ink px-4 py-2 text-sm font-black uppercase tracking-[0.12em] text-cream transition active:scale-[0.98];
+    @apply min-h-12 rounded-full border border-ink bg-ink px-5 py-2.5 text-sm font-extrabold text-cream shadow-float transition duration-300 hover:-translate-y-0.5 hover:shadow-soft active:scale-[0.98] dark:border-cream dark:bg-cream dark:text-charcoal;
   }
 
   .field {
-    @apply min-h-11 w-full rounded-sm border-2 border-line bg-cream px-3 text-sm font-bold outline-none transition placeholder:text-muted focus:border-ink focus:ring-2 focus:ring-ink/10;
+    @apply min-h-12 w-full rounded-xl border border-line bg-cream/70 px-4 text-sm font-semibold outline-none transition placeholder:text-muted focus:border-ink focus:bg-paper focus:ring-4 focus:ring-ink/5 dark:bg-charcoal/60 dark:focus:border-cream;
   }
 
   .athletic-title {
     font-family: Impact, Haettenschweiler, "Arial Black", sans-serif;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.055em;
     text-transform: uppercase;
   }
 
   .section-label {
-    @apply text-xs font-black uppercase tracking-[0.24em] text-muted;
+    @apply text-xs font-bold tracking-[0.08em] text-muted;
   }
 
   .outline-button {
-    @apply min-h-11 rounded-sm border-2 border-ink bg-cream px-4 py-2 text-sm font-black uppercase tracking-[0.12em] text-ink transition active:scale-[0.98];
+    @apply min-h-12 rounded-full border border-line bg-paper/70 px-5 py-2.5 text-sm font-extrabold text-ink shadow-float transition duration-300 hover:-translate-y-0.5 hover:border-ink active:scale-[0.98] dark:text-cream dark:hover:border-cream;
   }
+}
+
+.dark .card {
+  background: rgba(42, 39, 35, 0.9);
+  border-color: rgba(246, 243, 237, 0.12);
+}
+
+.dark .field {
+  color: #f6f3ed;
+}
+
+.dark .section-label,
+.dark .text-muted {
+  color: #c4bdb1;
 }
