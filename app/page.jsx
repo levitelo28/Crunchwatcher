@@ -276,16 +276,45 @@ function CrunchWatcherContent() {
 }
 
 function LoginScreen({ auth }) {
-  const [phone, setPhone] = useState("");
-  const [otp, setOtp] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
+  const [mode, setMode] = useState("create");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  async function sendOtp() {
-    const ok = await auth.sendPhoneOtp(phone);
-    if (ok) {
-      setOtpSent(true);
-      setMessage("OTP sent. Check your phone.");
+  function validateCreateAccount() {
+    if (!email.trim() || !password) return "Email and password are required.";
+    if (password.length < 8) return "Password too short. Use at least 8 characters.";
+    if (password !== confirmPassword) return "Passwords do not match.";
+    return "";
+  }
+
+  function validateLogin() {
+    if (!email.trim() || !password) return "Email and password are required.";
+    return "";
+  }
+
+  async function submitAuth() {
+    const validationMessage = mode === "create" ? validateCreateAccount() : validateLogin();
+    if (validationMessage) {
+      setMessage(validationMessage);
+      return;
+    }
+
+    setSubmitting(true);
+    setMessage("");
+    try {
+      if (mode === "create") {
+        const result = await auth.signUpWithEmail(email.trim(), password);
+        if (result.ok && result.needsConfirmation) {
+          setMessage("Account created. Check your email to confirm, then log in.");
+        }
+      } else {
+        await auth.signInWithEmail(email.trim(), password);
+      }
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -311,17 +340,38 @@ function LoginScreen({ auth }) {
 
         {auth.configured && (
           <div className="card grid gap-3">
-            <button className="touch-button" onClick={auth.signInWithGoogle}>Continue with Google</button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                className={mode === "create" ? "touch-button" : "outline-button"}
+                onClick={() => {
+                  setMode("create");
+                  setMessage("");
+                }}
+              >
+                Create Account
+              </button>
+              <button
+                className={mode === "login" ? "touch-button" : "outline-button"}
+                onClick={() => {
+                  setMode("login");
+                  setMessage("");
+                }}
+              >
+                Log In
+              </button>
+            </div>
+
             <div className="border-t-2 border-line pt-3">
-              <h2 className="athletic-title text-lg">Phone OTP</h2>
+              <h2 className="athletic-title text-lg">{mode === "create" ? "Create Account" : "Log In"}</h2>
               <div className="mt-3 grid gap-2">
-                <LabeledInput label="Phone number" value={phone} onChange={setPhone} />
-                {otpSent && <LabeledInput label="One-time code" value={otp} onChange={setOtp} />}
-                {!otpSent ? (
-                  <button className="outline-button" onClick={sendOtp}>Send Code</button>
-                ) : (
-                  <button className="touch-button" onClick={() => auth.verifyPhoneOtp(phone, otp)}>Verify Code</button>
+                <LabeledInput label="Email" type="email" value={email} onChange={setEmail} />
+                <LabeledInput label="Password" type="password" value={password} onChange={setPassword} />
+                {mode === "create" && (
+                  <LabeledInput label="Confirm password" type="password" value={confirmPassword} onChange={setConfirmPassword} />
                 )}
+                <button className="touch-button" onClick={submitAuth} disabled={submitting}>
+                  {submitting ? "Working..." : mode === "create" ? "Create Account" : "Log In"}
+                </button>
               </div>
             </div>
             {(auth.error || message) && <p className="text-sm font-bold text-muted">{auth.error || message}</p>}
